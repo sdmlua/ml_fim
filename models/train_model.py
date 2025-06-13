@@ -1,5 +1,3 @@
-# models/train.py
-
 import os
 import time
 import numpy as np
@@ -7,26 +5,62 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
+# New imports for preprocessing
+from sklearn.preprocessing import FunctionTransformer, StandardScaler
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.impute import SimpleImputer
+import joblib # For saving the preprocessor
+
 # Import functions and configurations from other modules
 from utils.helpers import print_step, print_done
 from utils.plot_utils import (
     plot_and_save_violin_and_scatter,
     save_lulc_graphs,
     plot_single_model_feature_importance,
-    plot_combined_feature_importance, # Used in run_training_pipeline for combined plots
-    plot_combined_prediction_comparison # Used in run_training_pipeline for combined plots
+    plot_combined_feature_importance,
+    plot_combined_prediction_comparison
 )
 from models.modeling import get_xgboost_regressor, get_random_forest_regressor
 from models.model_utils import save_model_artifacts, save_model_evaluation_report
 from config.settings import (
     FEATURES, LULC_LABEL_MAP, TEST_SIZE, RANDOM_STATE,
-    TARGET, WEIGHTS_COLUMN # Ensure TARGET and WEIGHTS_COLUMN are imported
+    TARGET, WEIGHTS_COLUMN
 )
+
+# --- Preprocessing Transformation Functions ---
+# These functions are designed to be used with sklearn.preprocessing.FunctionTransformer
+
+def sincos_transform(X):
+    """
+    Applies sin/cos transformation to a feature (e.g., 'aspect') assuming a 360-degree cycle.
+    X is expected to be a 2D array-like with a single feature column (in degrees).
+    """
+    if X.shape[1] != 1:
+        raise ValueError("sincos_transform expects a single feature column.")
+
+    X_np = X.to_numpy() if isinstance(X, pd.DataFrame) else X
+
+    # Convert degrees to radians
+    X_radians = np.radians(X_np)
+
+    sin_transformed = np.sin(X_radians)
+    cos_transformed = np.cos(X_radians)
+
+    # Return as a 2D array for ColumnTransformer
+    return np.concatenate((sin_transformed, cos_transformed), axis=1)
+
+def log_transform_target(y_series):
+    """
+    Applies log(1+x) transformation to a target Series.
+    This is specifically for the target variable 'flood_depth'.
+    """
+    return np.log1p(y_series)
 
 
 def train_and_evaluate_model(
     model_instance, model_name, X_train, y_train, w_train, X_test, y_test,
-    features, save_dir, common_test_data_for_eval
+    features, save_dir, common_test_data_for_eval, preprocessor_pipeline=None
 ):
     """
     Trains, evaluates, and saves results for a single machine learning model.
@@ -34,15 +68,16 @@ def train_and_evaluate_model(
     Args:
         model_instance: The initialized model object (e.g., XGBRegressor, RandomForestRegressor).
         model_name (str): A descriptive name for the model (e.g., "XGBoost", "Random Forest").
-        X_train (pd.DataFrame): Training features.
-        y_train (pd.Series): Training target (log-transformed).
+        X_train (pd.DataFrame): Training features (already preprocessed).
+        y_train (pd.Series): Training target (already log-transformed).
         w_train (pd.Series): Training sample weights.
-        X_test (pd.DataFrame): Test features.
-        y_test (pd.Series): Test target (log-transformed).
-        features (list): List of feature names.
+        X_test (pd.DataFrame): Test features (already preprocessed).
+        y_test (pd.Series): Test target (already log-transformed).
+        features (list): List of feature names (these are the *processed* feature names).
         save_dir (str): Directory to save model-specific results.
         common_test_data_for_eval (pd.DataFrame): DataFrame containing test features
                                                    and original scale actual flood depth for common plots.
+        preprocessor_pipeline (ColumnTransformer): The fitted preprocessing pipeline to save.
 
     Returns:
         dict: A dictionary containing evaluation metrics, feature importances, and predictions.
@@ -72,7 +107,6 @@ def train_and_evaluate_model(
         os.path.join(save_dir, "violin_test.png"), model_name=f"{model_name} prediction"
     )
     # Scatter and Violin plot for OWP HAND vs actual flood depth (common visualization)
-    # This plot is intended to show the baseline comparison of OWP HAND with actual flood depth.
     plot_and_save_violin_and_scatter(
         y_test_actual, common_test_data_for_eval["owp_hand_fim"], "Flood Depth (m)",
         os.path.join(save_dir, "owp_vs_flood.png"), model_name="OWP HAND vs Flood Depth"
@@ -85,10 +119,9 @@ def train_and_evaluate_model(
     save_lulc_graphs(df_eval_lulc, save_dir, model_name=model_name)
 
     # Feature importance plot for the current model
-    # Safely plot feature importance only if the model has the attribute
     if hasattr(model_instance, 'feature_importances_'):
         plot_single_model_feature_importance(
-            model_instance.feature_importances_, features,
+            model_instance.feature_importances_, features, # Use the passed 'features' which are the processed names
             os.path.join(save_dir, "feature_importance.png"), model_name=model_name
         )
     else:
@@ -107,25 +140,23 @@ def train_and_evaluate_model(
     print_done()
 
     # --- Save Model Info and Artifacts using model_utils ---
-    # Call the new utility function to save the evaluation report
     save_model_evaluation_report(
         model_name=model_name,
         X_train_shape=X_train.shape,
         X_test_shape=X_test.shape,
         mae_train=mae_train, rmse_train=rmse_train, r2_train=r2_train,
         mae_test=mae_test, rmse_test=rmse_test, r2_test=r2_test,
-        feature_importances=getattr(model_instance, 'feature_importances_', None), # Safely get importances
-        feature_names=features,
+        feature_importances=getattr(model_instance, 'feature_importances_', None),
+        feature_names=features, # Use the passed 'features'
         save_dir=save_dir
     )
 
-    # Call the new utility function to save model artifacts (model and data splits)
-    save_model_artifacts(model_instance, X_train, y_train, X_test, y_test, save_dir)
+    # Pass the preprocessor to save_model_artifacts along with other data
+    save_model_artifacts(model_instance, X_train, y_train, X_test, y_test, save_dir, preprocessor=preprocessor_pipeline)
 
     print(f"\n✅ {model_name} training complete. All results saved to {save_dir}")
     print(f"⏱️ Total Time for {model_name}: {time.time() - start_time:.2f} seconds")
 
-    # Return key results for combined visualizations/summary
     return {
         "mae_test": mae_test,
         "rmse_test": rmse_test,
@@ -139,7 +170,6 @@ def train_and_evaluate_model(
     }
 
 # --- Main Training Workflow Function ---
-
 def run_training_pipeline(pickle_path, save_base):
     """
     Main pipeline to train and evaluate both XGBoost and Random Forest models.
@@ -153,45 +183,91 @@ def run_training_pipeline(pickle_path, save_base):
     print(f"\n🚀 Starting combined training pipeline using data from {pickle_path}")
     os.makedirs(save_base, exist_ok=True)
 
-    print_step("Loading and preprocessing data")
+    print_step("Loading data")
     df = pd.read_pickle(pickle_path)
     print(f"Loaded {len(df)} rows.")
-
-    # Filter data and create new features
-    df = df[df['flood_depth'] > 0.01].copy()
-    df["flood_depth_log"] = np.log1p(df["flood_depth"]) # Log transform target
-    df["aspect_sin"] = np.sin(np.radians(df["aspect"]))
-    df["aspect_cos"] = np.cos(np.radians(df["aspect"]))
     print_done()
 
-    # Define features, target, and weights using settings from config
-    X = df[FEATURES].fillna(df[FEATURES].mean()) # Fill NaNs with column means
-    y = df[TARGET]
-    weights = df[WEIGHTS_COLUMN] + 0.1 # Use original flood depth for weights, adding a small constant
+    print_step("Filtering data (flood_depth > 0.01)")
+    # Filter data (this happens *before* any transformations based on data values)
+    df = df[df['flood_depth'] > 0.01].copy()
+    print_done()
+
+    print_step("Defining preprocessing pipeline for features")
+    # Define features that need sin/cos transformation
+    sincos_features = ['aspect']
+    
+    # Identify numerical features that need imputation and scaling.
+    # This means all FEATURES from config, EXCEPT 'aspect'.
+    numerical_features_for_scaling = [f for f in FEATURES if f not in sincos_features]
+
+    # Preprocessor for features (X)
+    feature_preprocessor = ColumnTransformer(
+        transformers=[
+            # Apply sin/cos to 'aspect'
+            ('sincos_aspect', FunctionTransformer(sincos_transform, validate=False), sincos_features),
+            # Apply imputation and scaling to other numerical features
+            ('num_pipeline', Pipeline([
+                ('imputer', SimpleImputer(strategy='mean')), # Fill NaNs with column means
+                ('scaler', StandardScaler())                 # Scale numerical features
+            ]), numerical_features_for_scaling),
+            # If you had categorical or other feature types, you'd add them here
+        ],
+        remainder='passthrough' # Keep other columns that are not explicitly handled (e.g., if FEATURES has more)
+    )
+    print_done()
+
+    print_step("Separating features, target, and weights")
+    X_raw = df[FEATURES].copy()
+    y_raw = df[TARGET].copy() # This is the original scale target
+    weights = df[WEIGHTS_COLUMN].copy() + 0.1 # Use original flood depth for weights, adding a small constant
+    print_done()
+
+    print_step("Applying preprocessing to features (X) and log transformation to target (y)")
+    # Fit and transform X_raw using the defined preprocessor
+    X_processed_array = feature_preprocessor.fit_transform(X_raw)
+
+    # Get the names of the new, processed features
+    # ColumnTransformer automatically handles naming for FunctionTransformer outputs (e.g., 'sincos_aspect__aspect_0', 'sincos_aspect__aspect_1')
+    processed_feature_names = feature_preprocessor.get_feature_names_out(X_raw.columns)
+    
+    # Convert the processed NumPy array back to a DataFrame with correct column names
+    X_processed = pd.DataFrame(X_processed_array, columns=processed_feature_names, index=X_raw.index)
+
+    # Apply log transformation to the target (y_raw)
+    y_processed = log_transform_target(y_raw)
+    print_done()
 
     print_step("Splitting data into training and test sets")
+    # Perform the split using the processed features (X_processed) and log-transformed target (y_processed)
     X_train, X_test, y_train, y_test, w_train, w_test = train_test_split(
-        X, y, weights, test_size=TEST_SIZE, random_state=RANDOM_STATE
+        X_processed, y_processed, weights, test_size=TEST_SIZE, random_state=RANDOM_STATE
     )
     print_done()
 
     # Store common test data that might be used for plots that are not model-specific
-    common_test_data_for_eval = X_test.copy()
+    # This ensures 'owp_hand_fim' (and any other original columns needed for plotting)
+    # are extracted from the original df based on the test set index.
+    common_test_data_for_eval = df.loc[X_test.index, ["owp_hand_fim"]].copy()
 
     results = {} # Dictionary to store results from each model
 
     # --- Train and Evaluate XGBoost Model ---
-    xgboost_model = get_xgboost_regressor() # Get initialized model from models.modeling
+    xgboost_model = get_xgboost_regressor()
     results["xgboost"] = train_and_evaluate_model(
         xgboost_model, "XGBoost", X_train, y_train, w_train, X_test, y_test,
-        FEATURES, os.path.join(save_base, "xgboost_results"), common_test_data_for_eval
+        processed_feature_names, # Pass the new, processed feature names here
+        os.path.join(save_base, "xgboost_results"), common_test_data_for_eval,
+        preprocessor_pipeline=feature_preprocessor # Pass the fitted preprocessor
     )
 
     # --- Train and Evaluate Random Forest Model ---
-    random_forest_model = get_random_forest_regressor() # Get initialized model from models.modeling
+    random_forest_model = get_random_forest_regressor()
     results["random_forest"] = train_and_evaluate_model(
         random_forest_model, "Random Forest", X_train, y_train, w_train, X_test, y_test,
-        FEATURES, os.path.join(save_base, "random_forest_results"), common_test_data_for_eval
+        processed_feature_names, # Pass the new, processed feature names here
+        os.path.join(save_base, "random_forest_results"), common_test_data_for_eval,
+        preprocessor_pipeline=feature_preprocessor # Pass the fitted preprocessor
     )
 
     # --- Generate Combined Visualizations ---
@@ -203,12 +279,11 @@ def run_training_pipeline(pickle_path, save_base):
     plot_combined_feature_importance(
         results["xgboost"]["feature_importances"],
         results["random_forest"]["feature_importances"],
-        FEATURES,
+        processed_feature_names, # Use the new, processed feature names here
         os.path.join(combined_plots_dir, "combined_feature_importance.png")
     )
 
     # Combined Prediction Comparison Plot (Scatter & Violin for both models)
-    # y_test_actual is effectively the same for both as it comes from the same y_test split
     plot_combined_prediction_comparison(
         results["xgboost"]["y_test_actual"],
         results["xgboost"]["y_test_pred"],
@@ -225,10 +300,11 @@ def run_training_pipeline(pickle_path, save_base):
         f.write("Combined Model Training Summary\n")
         f.write("=" * 40 + "\n\n")
 
-        f.write("Full Dataset (Inputs + Target) Description:\n")
-        full_combined_data_desc = X.copy()
-        full_combined_data_desc[TARGET] = y
-        f.write(str(full_combined_data_desc.describe()) + "\n\n")
+        # Describe the processed data used for training
+        f.write("Processed Dataset (Inputs + Target) Description:\n")
+        temp_processed_df = X_processed.copy()
+        temp_processed_df[TARGET] = y_processed # Add log-transformed target
+        f.write(str(temp_processed_df.describe()) + "\n\n")
 
         f.write("--- XGBoost Results ---\n")
         f.write(f"Train MAE: {results['xgboost']['mae_train']:.4f}\n")

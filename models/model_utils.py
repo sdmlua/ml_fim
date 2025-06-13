@@ -6,36 +6,43 @@ import numpy as np
 
 from utils.helpers import print_step, print_done
 
-def save_model_artifacts(model, X_train, y_train, X_test, y_test, save_dir):
+def save_model_artifacts(model, X_train, y_train, X_test, y_test, save_dir, preprocessor=None):
     """
-    Saves the trained model and data splits (X_train, y_train, X_test, y_test)
-    to a specified directory using pickle.
+    Saves the trained model and data splits to the specified directory.
 
     Args:
-        model: The trained machine learning model object.
-        X_train (pd.DataFrame): Training features DataFrame.
-        y_train (pd.Series): Training target Series.
-        X_test (pd.DataFrame): Test features DataFrame.
-        y_test (pd.Series): Test target Series.
-        save_dir (str): The directory path where the artifacts should be saved.
-                        Directories will be created if they don't exist.
+        model: The trained machine learning model.
+        X_train (pd.DataFrame): Training features.
+        y_train (pd.Series): Training target.
+        X_test (pd.DataFrame): Test features.
+        y_test (pd.Series): Test target.
+        save_dir (str): Directory to save the artifacts.
+        preprocessor (ColumnTransformer, optional): The fitted preprocessing pipeline. Defaults to None.
     """
-    print_step("Saving model and data splits")
-    # Ensure the target directory exists before saving files
     os.makedirs(save_dir, exist_ok=True)
 
-    # Save training data
-    with open(os.path.join(save_dir, "train.pkl"), "wb") as f:
-        pickle.dump((X_train, y_train), f)
-
-    # Save test data
-    with open(os.path.join(save_dir, "test.pkl"), "wb") as f:
-        pickle.dump((X_test, y_test), f)
-
     # Save the trained model
-    with open(os.path.join(save_dir, "model.pkl"), "wb") as f:
-        pickle.dump(model, f)
-    print_done()
+    model_path = os.path.join(save_dir, "model.pkl")
+    joblib.dump(model, model_path)
+    print(f"Model saved to {model_path}")
+
+    # Save the fitted preprocessor if provided
+    if preprocessor is not None:
+        preprocessor_path = os.path.join(save_dir, "preprocessor.pkl")
+        joblib.dump(preprocessor, preprocessor_path)
+        print(f"Preprocessor saved to {preprocessor_path}")
+
+    # Optionally, save data splits if needed for future debugging/analysis
+    X_train_path = os.path.join(save_dir, "X_train.pkl")
+    y_train_path = os.path.join(save_dir, "y_train.pkl")
+    X_test_path = os.path.join(save_dir, "X_test.pkl")
+    y_test_path = os.path.join(save_dir, "y_test.pkl")
+
+    joblib.dump(X_train, X_train_path)
+    joblib.dump(y_train, y_train_path)
+    joblib.dump(X_test, X_test_path)
+    joblib.dump(y_test, y_test_path)
+    print("Train/test data splits saved.")
 
 def save_model_evaluation_report(
     model_name, X_train_shape, X_test_shape,
