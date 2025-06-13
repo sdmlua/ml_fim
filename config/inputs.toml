@@ -1,4 +1,9 @@
-huc8 = "12090301"
+# inputs.toml
+base_path = "/data/raw/12090301/" # Path to raw data from root of the project
+
+target = "flood_depth" # must be same as variable name in [features] for target
+classification_target= "flooded" # Used when generating classification data flooded/not flooded.
+classification_threshold = 0.1 # everything above 0.1 will be labeled as flooded.
 
 [features]
 owp_hand_fim = "2year_12090301_depth.tif"
