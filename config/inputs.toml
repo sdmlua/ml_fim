@@ -1,0 +1,12 @@
+huc8 = "12090301"
+
+[features]
+owp_hand_fim = "2year_12090301_depth.tif"
+lulc = "lulc.tif"
+slope = "slope.tif"
+ndvi = "ndvi.tif"
+curvature = "curvature.tif"
+aspect = "aspect.tif"
+rem = "rem.tif"
+dem = "dem.tif"
+flood_depth = "fim_2year_m_final.tif"
