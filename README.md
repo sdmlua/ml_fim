@@ -30,6 +30,7 @@ python process_data.py --input ../data/ --output ../data_processed/
 - `--test_size`: (Optional) Proportion of test data. Default is `0.3`.
 
 ### Output Structure
+```
 data_processed/
 │
 ├── train.pkl                    # Combined, balanced training dataset
@@ -38,7 +39,7 @@ data_processed/
 │   ├── 10year_test.pkl
 │   ├── 50year_test.pkl
 │   └── ...
-
+```
 ### 💡 Note
 
 - Balancing is applied **before** splitting to reduce data volume and speed up training.
