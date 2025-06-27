@@ -6,7 +6,12 @@ import pandas as pd
 import xgboost as xgb
 import yaml
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import r2_score
+from sklearn.metrics import (
+    r2_score,
+    mean_squared_error,
+    mean_absolute_error,
+    max_error
+)
 
 
 def load_config(config_path):
@@ -25,49 +30,91 @@ def main():
 
     print(f"Loading dataset from: {args.input}")
     df = joblib.load(args.input)
-    df[args.target] = df[args.target] + 1e-5  # Avoid log(0)
 
-    print("Splitting dataset (80% train, 20% validation)")
+    # Ensure target is numeric and in a valid range
+    df[args.target] = pd.to_numeric(df[args.target], errors='coerce')
+    df[args.target] = np.minimum(df[args.target], 35) + 1e-5
+
+    # Prepare target vector
     y = df[args.target].copy()
     if args.log_target:
         print("Applying log1p transform to target")
         y = np.log1p(y)
 
+    # Drop unused columns and select numeric features
     drop_cols = [args.target, 'huc8', 'return_period']
-    X = df.drop(columns=drop_cols, errors='ignore')
-    X = X.select_dtypes(include=[np.number])  # keep numeric features only
+    X = df.drop(columns=drop_cols, errors='ignore').select_dtypes(include=[np.number])
 
-    print(f"Training columns ({len(X.columns)}): {list(X.columns)}")
+    print(f"Training columns ({X.shape[1]}): {list(X.columns)}")
+    print("Splitting dataset (80% train, 20% validation)")
+    X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
 
-    X_train, X_val, y_train, y_val = train_test_split(
-        X, y, test_size=0.2, random_state=42
-    )
+    # Sanity check for NaNs
+    assert X_train.isna().sum().sum() == 0, "X_train contains NaNs"
+    assert X_val.isna().sum().sum() == 0,   "X_val contains NaNs"
+    assert pd.isna(y_train).sum() == 0,     "y_train contains NaNs"
+    assert pd.isna(y_val).sum() == 0,       "y_val contains NaNs"
+
+    # Convert to numpy arrays
+    Xtr, ytr = X_train.values, y_train.values
+    Xvl, yvl = X_val.values,   y_val.values
 
     print(f"Loading config from: {args.config}")
     params = load_config(args.config)
 
+    # Extract early stopping and metric from config, if present
+    early_rounds = params.pop("early_stopping_rounds", None)
+    eval_metric  = params.pop("eval_metric", None)
+
+    # Inject them into the constructor so we don't pass unsupported kwargs to fit()
+    if eval_metric is not None:
+        params["eval_metric"] = eval_metric
+    if early_rounds is not None:
+        params["early_stopping_rounds"] = early_rounds
+
     print("Training XGBoost model...")
     model = xgb.XGBRegressor(**params)
-    model.fit(X_train, y_train)
+
+    model.fit(
+        Xtr,
+        ytr,
+        eval_set=[(Xtr, ytr), (Xvl, yvl)],
+        verbose=True
+    )
 
     print("Evaluating model...")
-    preds = model.predict(X_val)
+    train_preds = model.predict(Xtr)
+    val_preds   = model.predict(Xvl)
 
+    # Invert log1p if applied
     if args.log_target:
-        preds = np.expm1(preds)
-        y_val = np.expm1(y_val)
+        train_preds = np.expm1(train_preds)
+        ytr         = np.expm1(ytr)
+        val_preds   = np.expm1(val_preds)
+        yvl         = np.expm1(yvl)
 
-    # Replace NaNs with 0
-    preds = np.nan_to_num(preds, nan=0.0)
-    y_val = np.nan_to_num(y_val, nan=0.0)
+    # Clip any Inf/NaN
+    train_preds = np.nan_to_num(train_preds, nan=0.0, posinf=0.0, neginf=0.0)
+    val_preds   = np.nan_to_num(val_preds,   nan=0.0, posinf=0.0, neginf=0.0)
 
-    rmse = np.sqrt(np.mean((y_val - preds) ** 2))
-    r2 = r2_score(y_val, preds)
+    # Compute metrics
+    def rmse(y_true, y_pred):
+        return np.sqrt(mean_squared_error(y_true, y_pred))
 
-    print(f"Validation RMSE: {rmse:.4f}")
-    print(f"Validation R²: {r2:.4f}")
+    print("\n--- Training Results ---")
+    print(f"RMSE:       {rmse(ytr, train_preds):.4f}")
+    print(f"R²:         {r2_score(ytr, train_preds):.4f}")
+    print(f"MAE:        {mean_absolute_error(ytr, train_preds):.4f}")
+    print(f"Max Error:  {max_error(ytr, train_preds):.4f}")
 
-    print(f"Saving model to: {args.output}")
+    print("\n--- Validation Results ---")
+    print(f"RMSE:       {rmse(yvl, val_preds):.4f}")
+    print(f"R²:         {r2_score(yvl, val_preds):.4f}")
+    print(f"MAE:        {mean_absolute_error(yvl, val_preds):.4f}")
+    print(f"Max Error:  {max_error(yvl, val_preds):.4f}")
+
+    # Save the trained model
+    print(f"\nSaving model to: {args.output}")
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
     joblib.dump(model, args.output)
     print("Done.")
