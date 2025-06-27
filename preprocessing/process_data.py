@@ -20,7 +20,7 @@ def process_single_pair(owp_path, flood_path, shared_rasters,
     """
     Read OWP + flood rasters, mask/impute nodata,
     balance zeros vs non-zeros, build DataFrame,
-    stratify & split, and save the test set.
+    drop tiny strata, stratify & split, and save the test set.
     """
     print(f"\n--- Processing HUC8: {huc8}, Period: {period_name} ---")
     try:
@@ -37,12 +37,12 @@ def process_single_pair(owp_path, flood_path, shared_rasters,
         owp_flat   = owp_arr.flatten()
         flood_flat = flood_arr.flatten()
 
-        # 4) Build mask: drop any pixel where owp == nodata
+        # 4) Mask out owp nodata
         mask = np.ones_like(owp_flat, dtype=bool)
         if owp_nodata is not None:
             mask &= (owp_flat != owp_nodata)
 
-        # 5) Impute flood nodata → 0, then subset
+        # 5) Impute flood nodata → 0 then apply mask
         if flood_nodata is not None:
             flood_flat[flood_flat == flood_nodata] = 0.0
         owp_clean   = owp_flat[mask]
@@ -54,7 +54,7 @@ def process_single_pair(owp_path, flood_path, shared_rasters,
             "flood_depth":  flood_clean,
         }
 
-        # 7) Process each shared raster: mask, impute nodata → mean
+        # 7) Process shared rasters: mask, impute nodata→mean
         for name, path in shared_rasters.items():
             arr, nodata = read_raster_with_meta(path)
             if arr.shape != owp_arr.shape:
@@ -75,7 +75,7 @@ def process_single_pair(owp_path, flood_path, shared_rasters,
             else:
                 data[name] = arr_clean
 
-        # 8) Build DataFrame, add HUC8 & period, then drop any row with NaN
+        # 8) Build DataFrame, add metadata, drop any NaNs
         df = pd.DataFrame(data)
         df["huc8"]          = huc8
         df["return_period"] = period_name
@@ -84,18 +84,20 @@ def process_single_pair(owp_path, flood_path, shared_rasters,
         # 9) Balance zeros vs non-zeros in flood_depth
         zeros    = df[df["flood_depth"] == 0]
         nonzeros = df[df["flood_depth"] > 0]
-        if len(zeros) > 0 and len(nonzeros) > 0:
-            if len(zeros) > len(nonzeros):
-                zeros = zeros.sample(n=len(nonzeros), random_state=42)
-            else:
-                nonzeros = nonzeros.sample(n=len(zeros), random_state=42)
+        if len(zeros) and len(nonzeros):
+            n = min(len(zeros), len(nonzeros))
+            zeros    = zeros.sample(n=n, random_state=42)
+            nonzeros = nonzeros.sample(n=n, random_state=42)
             df = pd.concat([zeros, nonzeros], ignore_index=True)
             df = df.sample(frac=1.0, random_state=42).reset_index(drop=True)
 
-        # 10) Create strata for stratified split
+        # 10) Create equal-width strata and drop any with fewer than 2 samples
         df["strata"] = pd.cut(df["flood_depth"], bins=10)
+        counts = df["strata"].value_counts()
+        valid = counts[counts >= 2].index
+        df = df[df["strata"].isin(valid)].reset_index(drop=True)
 
-        # 11) Split into train/test
+        # 11) Stratified train/test split
         train_df, test_df = train_test_split(
             df.drop(columns=["strata"]),
             test_size=test_size,
@@ -119,25 +121,18 @@ def process_single_pair(owp_path, flood_path, shared_rasters,
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--input",  type=str, required=True,
-        help="Path to base data directory containing HUC8 subfolders"
-    )
-    parser.add_argument(
-        "--output", type=str, required=True,
-        help="Directory where train.pkl and per-HUC8 test sets will be saved"
-    )
-    parser.add_argument(
-        "--test_size", type=float, default=0.3,
-        help="Proportion of samples to reserve for the test set (default: 0.3)"
-    )
+    parser.add_argument("--input",  type=str, required=True,
+                        help="Base data directory with HUC8 subfolders")
+    parser.add_argument("--output", type=str, required=True,
+                        help="Output directory for train.pkl and test sets")
+    parser.add_argument("--test_size", type=float, default=0.3,
+                        help="Fraction of data for test set (default 0.3)")
     args = parser.parse_args()
 
     os.makedirs(args.output, exist_ok=True)
     print(f"Scanning input directory: {args.input}")
 
     tasks = []
-    # Discover all HUC8 folders
     for huc8 in os.listdir(args.input):
         huc8_path = os.path.join(args.input, huc8)
         if not os.path.isdir(huc8_path):
@@ -160,42 +155,38 @@ def main():
         for owp_file in os.listdir(owp_dir):
             if not owp_file.endswith(".tif"):
                 continue
-            period_name = owp_file.replace(f"_{huc8}_depth.tif", "").replace(".tif", "")
-            owp_path    = os.path.join(owp_dir, owp_file)
+            period = owp_file.replace(f"_{huc8}_depth.tif", "").replace(".tif", "")
+            owp_p  = os.path.join(owp_dir, owp_file)
 
-            flood_path = None
-            for fname in (
-                f"fim_{period_name}_m_final.tif",
-                f"{period_name}_{huc8}_depth.tif",
-                f"fim_{period_name}.tif",
-            ):
+            flood_p = None
+            for fname in (f"fim_{period}_m_final.tif",
+                          f"{period}_{huc8}_depth.tif",
+                          f"fim_{period}.tif"):
                 candidate = os.path.join(flood_dir, fname)
                 if os.path.exists(candidate):
-                    flood_path = candidate
+                    flood_p = candidate
                     break
 
-            if flood_path:
-                tasks.append((owp_path, flood_path, shared_rasters,
-                              huc8, period_name, args.output, args.test_size))
+            if flood_p:
+                tasks.append((owp_p, flood_p, shared_rasters,
+                              huc8, period, args.output, args.test_size))
             else:
                 print(f"Skipping {owp_file}: no matching flood file found")
 
     print(f"\nTotal raster pairs to process: {len(tasks)}\n")
 
-    # Process all tasks and collect training DataFrames
     train_dfs = []
     for task in tasks:
-        train_df = process_single_pair(*task)
-        if train_df is not None:
-            train_dfs.append(train_df)
+        df_train = process_single_pair(*task)
+        if df_train is not None:
+            train_dfs.append(df_train)
 
-    # Combine, shuffle, and save the master train.pkl
     if train_dfs:
         combined = pd.concat(train_dfs, ignore_index=True)
         combined = combined.sample(frac=1.0, random_state=42).reset_index(drop=True)
-        train_file = os.path.join(args.output, "train.pkl")
-        joblib.dump(combined, train_file)
-        print(f"\nSaved combined training file: {train_file}")
+        out_train = os.path.join(args.output, "train.pkl")
+        joblib.dump(combined, out_train)
+        print(f"\nSaved combined training file: {out_train}")
     else:
         print("No training data generated.")
 
