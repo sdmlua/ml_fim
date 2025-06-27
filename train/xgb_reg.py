@@ -33,7 +33,7 @@ def main():
 
     # Ensure target is numeric and in a valid range
     df[args.target] = pd.to_numeric(df[args.target], errors='coerce')
-    df[args.target] = np.minimum(df[args.target], 35) + 1e-5
+    df[args.target] = np.minimum(df[args.target], 25.01)  # Cap extreme values
 
     # Prepare target vector
     y = df[args.target].copy()
