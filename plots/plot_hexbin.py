@@ -5,7 +5,6 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score, mean_squared_error
 from glob import glob
 import math
@@ -54,8 +53,8 @@ for path in test_files:
             if not args.owp_plot:
                 df["predicted"] = np.expm1(df["predicted"])
 
-        # Filter
-        threshold = 0.1 if not args.owp_plot else 0.0
+        # Filter out very small values (optional)
+        threshold = 0.01 if not args.owp_plot else 0.0
         df = df[df["flood_depth"] > threshold]
 
         if not df.empty:
@@ -87,25 +86,23 @@ for i, ((huc8, period), group) in enumerate(grouped):
     ax = axes[i]
 
     if args.owp_plot:
-        x = group["owp_hand_fim"].values.reshape(-1, 1)
+        x = group["owp_hand_fim"].values
         y = group["flood_depth"].values
         xlabel = "OWP HAND FIM"
         ylabel = "Flood Depth"
     else:
-        x = group["flood_depth"].values.reshape(-1, 1)
-        y = group["predicted"].values
-        xlabel = "True Flood Depth"
-        ylabel = "Predicted Flood Depth"
+        x = group["predicted"].values
+        y = group["flood_depth"].values
+        xlabel = "Predicted Flood Depth"
+        ylabel = "True Flood Depth"
 
-    model = LinearRegression().fit(x, y)
-    y_fit = model.predict(x)
-
-    r2 = r2_score(y, y_fit)
-    mse = mean_squared_error(y, y_fit)
-    rmse = np.sqrt(mse)
+    # Compute R² and RMSE directly (no regression fit)
+    r2 = r2_score(y, x)
+    rmse = np.sqrt(mean_squared_error(y, x))
+    mse = mean_squared_error(y, x)
 
     hb = ax.hexbin(
-        x.flatten(),
+        x,
         y,
         gridsize=50,
         cmap="viridis",
@@ -114,9 +111,15 @@ for i, ((huc8, period), group) in enumerate(grouped):
     )
     last_hb = hb
 
-    x_line = np.linspace(x.min(), x.max(), 100)
-    y_line = model.predict(x_line.reshape(-1, 1))
-    ax.plot(x_line, y_line, color="red", linewidth=2, zorder=2)
+    # Optional: add regression line just for visual context
+    try:
+        from sklearn.linear_model import LinearRegression
+        model = LinearRegression().fit(x.reshape(-1, 1), y)
+        x_line = np.linspace(x.min(), x.max(), 100)
+        y_line = model.predict(x_line.reshape(-1, 1))
+        ax.plot(x_line, y_line, color="red", linewidth=2, zorder=2)
+    except Exception:
+        pass  # Skip line if regression fails (e.g. constant x)
 
     ax.set_title(f"HUC8: {huc8}, Period: {period}")
     ax.set_xlabel(xlabel)
@@ -134,9 +137,11 @@ for i, ((huc8, period), group) in enumerate(grouped):
 
     ax.grid(True, linestyle='--', linewidth=0.5, zorder=0)
 
+# Remove unused subplots
 for j in range(i + 1, len(axes)):
     fig.delaxes(axes[j])
 
+# Colorbar and save
 fig.subplots_adjust(right=0.9)
 cbar_ax = fig.add_axes([0.91, 0.15, 0.015, 0.7])
 fig.colorbar(last_hb, cax=cbar_ax, label="counts")
