@@ -1,0 +1,31 @@
+# XGBoost Configuration for Flood Depth Prediction (MSE Objective with Low Regularization)
+
+# Objective
+objective: reg:squarederror             # Standard regression objective (MSE)
+eval_metric: rmse                       # Evaluation metric (can also use mse)
+
+# Boosting rounds & learning
+n_estimators: 500                       # Total boosting rounds
+learning_rate: 0.1                      # Smaller learning rate for smoother convergence
+
+# Tree structure control
+tree_method: hist                       # Fast histogram-based method
+max_depth: 8                            # Limit depth for interpretability and control
+grow_policy: depthwise                  # Default policy for fixed depth trees
+
+# Regularization - kept low to allow model flexibility
+reg_lambda: 1.0                         # L2 regularization (lowered)
+reg_alpha: 0.0                          # L1 regularization (disabled)
+min_child_weight: 1                     # Minimal restriction on child node weight
+gamma: 0.0                              # No restriction on loss reduction for splits
+max_delta_step: 0                       # No constraint on weight step
+
+# Subsampling
+subsample: 1.0                          # Use all rows (no row subsampling)
+colsample_bytree: 1.0                   # Use all features
+
+# Optimization and reproducibility
+early_stopping_rounds: 30              # Stop if validation score doesn't improve
+random_state: 42                        # For reproducibility
+n_jobs: -1                              # Use all cores
+verbosity: 1                            # Show warnings only
